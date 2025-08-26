@@ -1,8 +1,8 @@
 'use strict';
 
+/* ===== DOM ===== */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-
 const $score = document.getElementById('score');
 const $speed = document.getElementById('speed');
 const $pause = document.getElementById('pause');
@@ -12,38 +12,58 @@ const $start = document.getElementById('start');
 const $pauseOverlay = document.getElementById('pauseOverlay');
 const $resume = document.getElementById('resume');
 
+/* ===== State ===== */
 let state = 'menu';
 let groundY = 0;
 let score = 0;
 let t = 0;
 
-/* API */
+/* ===== API (avec fallback) ===== */
 const API_BASE = 'http://localhost:3001';
 let OBSTACLE_DEFS = null;
 let BONUS_DEFS = null;
+const FALLBACK_OBSTACLES = [
+  { type: 'single',  weight: 3, wMin: 26, wMax: 48,  hMin: 30, hMax: 80 },
+  { type: 'low-wide',weight: 1, wMin: 70, wMax: 150, hMin: 22, hMax: 40 }
+];
+const FALLBACK_BONUSES = [
+  { type: 'coin', points: 50,  weight: 2 },
+  { type: 'gem',  points: 120, weight: 1 }
+];
 
-/* Physique & joueur (tes valeurs) */
+/* ===== Physique / gameplay fixes ===== */
 const GRAVITY = 2200;
 const JUMP_VY = -950;
 const PLAYER_R = 22;
 const SAFETY = 18;
 const T_AIR = (2 * Math.abs(JUMP_VY)) / GRAVITY;
+function difficultySpeed(s) { return 220 + 14 * s; } // linéaire
 
-/* Espacement de base (tes valeurs) */
-const GAP_COEF        = 0.85;
-const GAP_BASE        = 140;
-const GAP_EXTRA_MIN   = 100;
-const GAP_EXTRA_MAX   = 420;   // max ↑ pour variété
+/* Espacement obstacles */
+const GAP_COEF = 0.85, GAP_BASE = 140;
+const GAP_EXTRA_MIN = 100, GAP_EXTRA_MAX = 420;
 const MIN_PATTERN_GAP = 360;
+const LONG_GAP_CHANCE = 0.22;
+const LONG_GAP_BONUS_MIN = 160, LONG_GAP_BONUS_MAX = 420;
 
-/* Long gaps (bonus vers le haut) */
-const LONG_GAP_CHANCE    = 0.22;
-const LONG_GAP_BONUS_MIN = 160;
-const LONG_GAP_BONUS_MAX = 420;
+/* Bonus/pickups */
+const BONUS_LEAD_TIME = 0.65;
+const BONUS_MIN_H = 50, BONUS_MAX_H_CAP = 150;
+const PICKUP_SAFE_HORIZ = PLAYER_R + 28;
 
+/* ===== Globals (une seule déclaration) ===== */
 let player = null;
+const obstacles = [];
+const bonuses = [];
+const farStars = [], nearStars = [];
+let distSinceSpawn = 0;     // distance parcourue depuis le dernier spawn d’obstacle
+let nextGapPx = 360;        // distance à atteindre avant prochain obstacle
+let nextBonusScore = 300;   // palier score pour la prochaine pièce
+let gemSpawned = false;
+let gemTargetScore = 0;
+let gemTryCooldown = 0;
 
-/* UI */
+/* ===== UI ===== */
 function syncUI() {
   const isMenu = state === 'menu';
   const isOver = state === 'over';
@@ -55,7 +75,7 @@ function syncUI() {
   if ($pause) $pause.textContent = isPaused ? 'Reprendre' : 'Pause';
 }
 
-/* Canvas + sol */
+/* ===== Canvas / sol ===== */
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const w = window.innerWidth, h = window.innerHeight;
@@ -70,8 +90,7 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-/* Parallax */
-const farStars = [], nearStars = [];
+/* ===== Parallax ===== */
 function seedStars() {
   farStars.length = 0; nearStars.length = 0;
   const w = canvas.width / (window.devicePixelRatio || 1);
@@ -80,11 +99,8 @@ function seedStars() {
   for (let i = 0; i < 40; i++)
     nearStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 2 + 0.8 });
 }
+seedStars();
 
-/* Vitesse */
-function difficultySpeed(s) { return 220 + 14 * s; }
-
-/* Fond + sol */
 function paintBackdrop(dt, speed) {
   const w = canvas.width / (window.devicePixelRatio || 1);
   const h = canvas.height / (window.devicePixelRatio || 1);
@@ -106,7 +122,7 @@ function paintBackdrop(dt, speed) {
   ctx.shadowBlur = 0;
 }
 
-/* Joueur */
+/* ===== Joueur ===== */
 class Player {
   constructor() { this.r = PLAYER_R; this.x = 0; this.y = 0; this.vy = 0; this.onGround = true; this.snapToGround(); }
   snapToGround() {
@@ -130,9 +146,8 @@ class Player {
   getAABB() { return { x: this.x - this.r, y: this.y - this.r, w: this.r * 2, h: this.r * 2 }; }
 }
 player = new Player();
-seedStars();
 
-/* Obstacles */
+/* ===== Obstacles ===== */
 class Obstacle {
   constructor(x, y, w, h) { this.x = x; this.y = y; this.w = w; this.h = h; this.col = '#7dd3fc'; this.border = '#0ea5e9'; }
   update(dt, baseSpeed) { this.x -= baseSpeed * dt; }
@@ -145,23 +160,25 @@ class Obstacle {
   off() { return this.x + this.w < -10; }
   aabb() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
 }
-const obstacles = [];
 
-/* Bonus */
+/* ===== Bonus (pièces / gemme) ===== */
 class Bonus {
-  constructor(x, y, r, points) { this.x = x; this.y = y; this.r = r; this.points = points; this.col = '#ffd166'; }
+  constructor(x, y, r, points, type='coin') {
+    this.x = x; this.y = y; this.r = r; this.points = points; this.type = type;
+    this.col = type === 'gem' ? '#34d399' : '#ffd166';
+    this.stroke = type === 'gem' ? '#059669' : '#ff9f1c';
+  }
   update(dt, baseSpeed) { this.x -= baseSpeed * dt; }
   draw(ctx) {
     ctx.shadowColor = this.col; ctx.shadowBlur = 14;
     ctx.fillStyle = this.col; ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0; ctx.strokeStyle = '#ff9f1c'; ctx.lineWidth = 2;
+    ctx.shadowBlur = 0; ctx.strokeStyle = this.stroke; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(this.x, this.y, this.r - 4, 0, Math.PI * 2); ctx.stroke();
   }
   off() { return this.x + this.r < -10; }
 }
-const bonuses = [];
 
-/* Jouabilité */
+/* ===== Utilitaires jouabilité ===== */
 function timeAboveHeight(h) {
   const vy = Math.abs(JUMP_VY);
   const disc = vy * vy - 2 * GRAVITY * h;
@@ -185,8 +202,6 @@ function adjustBlockForSpeed(speed, w, h) {
   const newW = Math.min(w, Math.max(18, Math.floor(limit)));
   return { w: newW, h };
 }
-
-/* Paliers d’espacement (tes valeurs) */
 function gapFactorByProgress(currentSpeed, currentScore) {
   if (currentSpeed < 500 || currentScore < 1000) return 0.77;
   if (currentScore < 3000) return 0.88;
@@ -196,16 +211,7 @@ function gapFactorByProgress(currentSpeed, currentScore) {
   return factor;
 }
 
-/* Fetch catalogue (avec fallback) */
-const FALLBACK_OBSTACLES = [
-  { type: 'single',  weight: 3, wMin: 26, wMax: 48,  hMin: 30, hMax: 80 },
-  { type: 'low-wide',weight: 1, wMin: 70, wMax: 150, hMin: 22, hMax: 40 }
-];
-const FALLBACK_BONUSES = [
-  { type: 'coin', points: 50,  weight: 2 },
-  { type: 'gem',  points: 120, weight: 1 }
-];
-
+/* ===== API ===== */
 async function loadCatalog() {
   try {
     const [o, b] = await Promise.all([
@@ -222,7 +228,6 @@ async function loadCatalog() {
   }
 }
 loadCatalog();
-
 function pickWeighted(defs) {
   const total = defs.reduce((s,d)=>s+(d.weight||1),0);
   let r = Math.random() * total;
@@ -230,17 +235,14 @@ function pickWeighted(defs) {
   return defs[0];
 }
 
-/* Génération (distance) */
-let distSinceSpawn = 0;
-let nextGapPx = 360;
-
+/* ===== Obstacles : génération par distance ===== */
 function scheduleNextGap(currentSpeed) {
   const base  = currentSpeed * (T_AIR * GAP_COEF) + GAP_BASE;
   const extra = GAP_EXTRA_MIN + Math.random() * (GAP_EXTRA_MAX - GAP_EXTRA_MIN);
   const factor = gapFactorByProgress(currentSpeed, score);
   let gap = (base + extra) * factor;
 
-  const hardFloor   = 240;
+  const hardFloor = 240;
   const scaledFloor = MIN_PATTERN_GAP * factor;
   gap = Math.max(hardFloor, scaledFloor, gap);
 
@@ -250,12 +252,10 @@ function scheduleNextGap(currentSpeed) {
   }
   nextGapPx = gap;
 }
-
 function addBlockAt(x, w, h) {
   const y = groundY - h;
   obstacles.push(new Obstacle(x, y, w, h));
 }
-
 function spawnPattern(currentSpeed) {
   const dpr = window.devicePixelRatio || 1;
   const viewW = canvas.width / dpr;
@@ -268,56 +268,115 @@ function spawnPattern(currentSpeed) {
   let h = Math.floor(def.hMin + Math.random() * (def.hMax - def.hMin + 1));
   ({ w, h } = adjustBlockForSpeed(currentSpeed, w, h));
   addBlockAt(spawnX, w, h);
-
   scheduleNextGap(currentSpeed);
 }
 
-/* Bonus (distance indépendante) */
-let distSinceBonus = 0;
-let nextBonusGapPx = 800;
-
-function scheduleNextBonus(currentSpeed) {
-  const base = 500 + Math.random() * 700;       // 500–1200
-  const k = Math.min(1.2, 0.9 + currentSpeed / 2000);
-  nextBonusGapPx = base * k;
+/* ===== Pièces par score ===== */
+function bonusStepFor(s) { return s < 1000 ? 300 : (s < 2000 ? 500 : 1000); }
+function computeNextBonusScore(s) {
+  const step = bonusStepFor(s);
+  const n = Math.floor(s / step) + 1;
+  return n * step;
+}
+function coinValueNow(currentSpeed, base = 50) {
+  const mult = Math.min(3, 1 + currentSpeed / 1200);
+  return Math.round(base * mult);
 }
 
-function spawnBonus(currentSpeed) {
+/* ===== Sécurité spawn pickup (évite obstacles sous le joueur au moment du ramassage) ===== */
+function isSafePickupSpawn(spawnX, currentSpeed) {
+  if (currentSpeed <= 0) return false;
+  const time = (spawnX - player.x) / currentSpeed;
+  if (time < BONUS_LEAD_TIME * 0.6) return false;
+  const left = player.x - PICKUP_SAFE_HORIZ;
+  const right = player.x + PICKUP_SAFE_HORIZ;
+  for (const o of obstacles) {
+    const ox = o.x - currentSpeed * time;
+    const oRight = ox + o.w;
+    if (oRight < left || ox > right) continue;
+    return false;
+  }
+  return true;
+}
+
+/* ===== Spawn pièces safe ===== */
+function spawnBonusAtThreshold(currentSpeed) {
   const dpr = window.devicePixelRatio || 1;
   const viewW = canvas.width / dpr;
-  const spawnX = Math.floor(viewW + 12);
 
   const defs = BONUS_DEFS || FALLBACK_BONUSES;
-  const def = pickWeighted(defs);
-
+  const coin = (defs.find(d => d.type === 'coin') ?? defs[0]);
   const r = 14;
-  const hAbove = 60 + Math.random() * 80;       // 60–140 au-dessus de la ligne
-  const y = Math.max(groundY - hAbove, r + 4);
-  bonuses.push(new Bonus(spawnX, y, r, def.points));
+  const apex = (Math.abs(JUMP_VY) ** 2) / (2 * GRAVITY);
+  const maxH = Math.max(BONUS_MIN_H, Math.min(BONUS_MAX_H_CAP, Math.floor(apex - 12)));
 
-  scheduleNextBonus(currentSpeed);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const leadX = Math.max(0, currentSpeed * (BONUS_LEAD_TIME + attempt * 0.15));
+    const spawnX = Math.floor(viewW + 12 + leadX);
+    const hAbove = BONUS_MIN_H + Math.random() * (maxH - BONUS_MIN_H);
+    const y = Math.max(groundY - hAbove, r + 4);
+    if (!isSafePickupSpawn(spawnX, currentSpeed)) continue;
+    bonuses.push(new Bonus(spawnX, y, r, coin.points, 'coin'));
+    return;
+  }
 }
 
-/* Collisions */
+/* ===== Gemme : 1 par run ===== */
+function pickGemTargetScore() {
+  const min = 800, max = 2200;
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+function trySpawnGem(currentSpeed) {
+  if (gemSpawned || score < gemTargetScore || gemTryCooldown > 0) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const viewW = canvas.width / dpr;
+  const defs = BONUS_DEFS || FALLBACK_BONUSES;
+  const gemDef = (defs.find(d => d.type === 'gem') ?? { points: 120 });
+  const r = 16;
+  const apex = (Math.abs(JUMP_VY) ** 2) / (2 * GRAVITY);
+  const maxH = Math.max(BONUS_MIN_H, Math.min(BONUS_MAX_H_CAP, Math.floor(apex - 16)));
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const leadX = Math.max(0, currentSpeed * (Math.max(BONUS_LEAD_TIME, 0.8) + attempt * 0.18));
+    const spawnX = Math.floor(viewW + 12 + leadX);
+    const hAbove = BONUS_MIN_H + Math.random() * (maxH - BONUS_MIN_H);
+    const y = Math.max(groundY - hAbove, r + 4);
+    if (!isSafePickupSpawn(spawnX, currentSpeed)) continue;
+    bonuses.push(new Bonus(spawnX, y, r, gemDef.points, 'gem'));
+    gemSpawned = true;
+    return;
+  }
+  gemTryCooldown = 0.6; // re-try un peu plus tard
+}
+
+/* ===== Collisions ===== */
 function hit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
 function circleHit(x1,y1,r1, x2,y2,r2) {
   const dx = x1 - x2, dy = y1 - y2;
   return dx*dx + dy*dy <= (r1 + r2) * (r1 + r2);
 }
 
-/* États */
+/* ===== États ===== */
 function gameOver() { state = 'over'; syncUI(); }
 function resetStateCommon() {
   score = 0; t = 0;
   obstacles.length = 0; bonuses.length = 0;
-  distSinceSpawn = 0; distSinceBonus = 0;
-  nextGapPx = 360; nextBonusGapPx = 800;
+
+  distSinceSpawn = 0;
+  nextGapPx = 360;
+  nextBonusScore = computeNextBonusScore(0);
+
+  gemSpawned = false;
+  gemTargetScore = pickGemTargetScore();
+  gemTryCooldown = 0;
+
   player.snapToGround();
 }
 function resetGame() { resetStateCommon(); state = 'running'; syncUI(); }
 function startFromMenu() { resetStateCommon(); state = 'running'; syncUI(); }
 
-/* Boucle */
+/* ===== Boucle ===== */
 let last = performance.now();
 function loop(now = performance.now()) {
   const dt = Math.min(0.033, (now - last) / 1000);
@@ -332,12 +391,21 @@ function loop(now = performance.now()) {
     score += dt * (10 + speed * 0.03);
     player.update(dt);
 
+    // Obstacles
     distSinceSpawn += speed * dt;
     if (distSinceSpawn >= nextGapPx) { distSinceSpawn = 0; spawnPattern(speed); }
 
-    distSinceBonus += speed * dt;
-    if (distSinceBonus >= nextBonusGapPx) { distSinceBonus = 0; spawnBonus(speed); }
+    // Pièces
+    if (Math.floor(score) >= nextBonusScore) {
+      spawnBonusAtThreshold(speed);
+      nextBonusScore = computeNextBonusScore(nextBonusScore);
+    }
 
+    // Gemme
+    if (gemTryCooldown > 0) gemTryCooldown -= dt;
+    trySpawnGem(speed);
+
+    // Dessin + collisions
     const p = player.getAABB();
 
     for (let i = obstacles.length - 1; i >= 0; i--) {
@@ -352,7 +420,10 @@ function loop(now = performance.now()) {
       b.update(dt, speed); b.draw(ctx);
       if (b.off()) { bonuses.splice(i, 1); continue; }
       if (circleHit(player.x, player.y, player.r, b.x, b.y, b.r)) {
-        score += b.points; bonuses.splice(i, 1);
+        const base = b.points;
+        const gain = b.type === 'coin' ? coinValueNow(speed, base) : base;
+        score += gain;
+        bonuses.splice(i, 1);
       }
     }
   } else {
@@ -375,7 +446,7 @@ function loop(now = performance.now()) {
 }
 requestAnimationFrame(loop);
 
-/* Entrées */
+/* ===== Entrées ===== */
 if ($start) $start.addEventListener('click', startFromMenu);
 if ($pause) $pause.addEventListener('click', () => {
   state = state === 'running' ? 'paused' : (state === 'paused' ? 'running' : state);
