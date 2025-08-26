@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Neon Night Runner</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -10,29 +10,26 @@
   <canvas id="game"></canvas>
 
   <div id="ui">
-    <div class="pill"><span>Score</span> <strong id="score">0</strong></div>
-    <div class="pill"><span>Vitesse</span> <strong id="speed">0</strong></div>
+    <div class="pill"><span>Score</span>&nbsp;<strong id="score">0</strong></div>
+    <div class="pill"><span>Vitesse</span>&nbsp;<strong id="speed">0</strong></div>
     <button id="pause" class="btn">Pause</button>
-    <button id="restart" class="btn ghost" hidden>Rejouer</button>
+    <button id="restart" class="btn" hidden>Rejouer</button>
   </div>
 
-  <!-- Overlay démarrage -->
-  <div id="overlay">
+  <section id="overlay">
     <div class="panel">
       <h1>Neon Night Runner</h1>
       <p>Espace pour sauter • P pour pause</p>
-      <button id="start" class="btn big primary">Jouer</button>
+      <button id="start" class="btn big">Jouer</button>
     </div>
-  </div>
+  </section>
 
-  <!-- Overlay pause -->
-  <div id="pauseOverlay" hidden>
+  <section id="pauseOverlay" hidden>
     <div class="panel">
-      <h1>Pause</h1>
-      <p>Appuie sur <strong>P</strong> ou clique <strong>Reprendre</strong>.</p>
-      <button id="resume" class="btn big primary">Reprendre</button>
+      <h2>Pause</h2>
+      <button id="resume" class="btn big">Reprendre</button>
     </div>
-  </div>
+  </section>
 
   <script src="main.js"></script>
 </body>

@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "type": "single",   "weight": 3, "wMin": 26, "wMax": 48,  "hMin": 30, "hMax": 80 },
+    { "type": "low-wide", "weight": 1, "wMin": 70, "wMax": 150, "hMin": 22, "hMax": 40 }
+  ]
+}

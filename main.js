@@ -17,26 +17,30 @@ let groundY = 0;
 let score = 0;
 let t = 0;
 
-/* Physique & joueur */
+/* API */
+const API_BASE = 'http://localhost:3001';
+let OBSTACLE_DEFS = null;
+let BONUS_DEFS = null;
+
+/* Physique & joueur (tes valeurs) */
 const GRAVITY = 2200;
 const JUMP_VY = -950;
 const PLAYER_R = 22;
 const SAFETY = 18;
 const T_AIR = (2 * Math.abs(JUMP_VY)) / GRAVITY;
 
-/* Réglages d’espacement “de base” entre patterns (minima conservés) */
-const GAP_COEF        = 0.85;  // proportion de distance de saut
-const GAP_BASE        = 140;   // marge fixe
-const GAP_EXTRA_MIN   = 100;   // aléa min
-const GAP_EXTRA_MAX   = 420;   // ↑ plus de max pour plus de variété (était 220)
-const MIN_PATTERN_GAP = 360;   // plancher dur (avant facteur)
+/* Espacement de base (tes valeurs) */
+const GAP_COEF        = 0.85;
+const GAP_BASE        = 140;
+const GAP_EXTRA_MIN   = 100;
+const GAP_EXTRA_MAX   = 420;   // max ↑ pour variété
+const MIN_PATTERN_GAP = 360;
 
-/* Long gaps optionnels (bonus uniquement vers le haut) */
-const LONG_GAP_CHANCE    = 0.22; // ~22% des spawns deviennent “longs”
-const LONG_GAP_BONUS_MIN = 160;  // bonus mini (px)
-const LONG_GAP_BONUS_MAX = 420;  // bonus maxi (px)
+/* Long gaps (bonus vers le haut) */
+const LONG_GAP_CHANCE    = 0.22;
+const LONG_GAP_BONUS_MIN = 160;
+const LONG_GAP_BONUS_MAX = 420;
 
-/* déclaré tôt */
 let player = null;
 
 /* UI */
@@ -77,7 +81,7 @@ function seedStars() {
     nearStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 2 + 0.8 });
 }
 
-/* Vitesse globale (linéaire) */
+/* Vitesse */
 function difficultySpeed(s) { return 220 + 14 * s; }
 
 /* Fond + sol */
@@ -143,7 +147,21 @@ class Obstacle {
 }
 const obstacles = [];
 
-/* Jouabilité (sauts toujours possibles) */
+/* Bonus */
+class Bonus {
+  constructor(x, y, r, points) { this.x = x; this.y = y; this.r = r; this.points = points; this.col = '#ffd166'; }
+  update(dt, baseSpeed) { this.x -= baseSpeed * dt; }
+  draw(ctx) {
+    ctx.shadowColor = this.col; ctx.shadowBlur = 14;
+    ctx.fillStyle = this.col; ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0; ctx.strokeStyle = '#ff9f1c'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r - 4, 0, Math.PI * 2); ctx.stroke();
+  }
+  off() { return this.x + this.r < -10; }
+}
+const bonuses = [];
+
+/* Jouabilité */
 function timeAboveHeight(h) {
   const vy = Math.abs(JUMP_VY);
   const disc = vy * vy - 2 * GRAVITY * h;
@@ -168,42 +186,68 @@ function adjustBlockForSpeed(speed, w, h) {
   return { w: newW, h };
 }
 
-/* ——— Paliers d’espacement (tes valeurs) ——— */
+/* Paliers d’espacement (tes valeurs) */
 function gapFactorByProgress(currentSpeed, currentScore) {
-  if (currentSpeed < 500 || currentScore < 1000) {
-    return 0.77;
-  }
-  if (currentScore < 3000) {
-    return 0.88;
-  }
+  if (currentSpeed < 500 || currentScore < 1000) return 0.77;
+  if (currentScore < 3000) return 0.88;
   const steps = Math.floor((currentScore - 2500) / 500) + 1;
   let factor = 0.92 * Math.pow(0.97, steps);
   if (factor < 0.65) factor = 0.65;
   return factor;
 }
 
-/* Génération infinie basée sur distance */
+/* Fetch catalogue (avec fallback) */
+const FALLBACK_OBSTACLES = [
+  { type: 'single',  weight: 3, wMin: 26, wMax: 48,  hMin: 30, hMax: 80 },
+  { type: 'low-wide',weight: 1, wMin: 70, wMax: 150, hMin: 22, hMax: 40 }
+];
+const FALLBACK_BONUSES = [
+  { type: 'coin', points: 50,  weight: 2 },
+  { type: 'gem',  points: 120, weight: 1 }
+];
+
+async function loadCatalog() {
+  try {
+    const [o, b] = await Promise.all([
+      fetch(`${API_BASE}/obstacles`).then(r => r.json()),
+      fetch(`${API_BASE}/bonuses`).then(r => r.json())
+    ]);
+    OBSTACLE_DEFS = Array.isArray(o.items) && o.items.length ? o.items : FALLBACK_OBSTACLES;
+    BONUS_DEFS    = Array.isArray(b.items) && b.items.length ? b.items : FALLBACK_BONUSES;
+    setTimeout(loadCatalog, 60000);
+  } catch {
+    OBSTACLE_DEFS = FALLBACK_OBSTACLES;
+    BONUS_DEFS    = FALLBACK_BONUSES;
+    setTimeout(loadCatalog, 30000);
+  }
+}
+loadCatalog();
+
+function pickWeighted(defs) {
+  const total = defs.reduce((s,d)=>s+(d.weight||1),0);
+  let r = Math.random() * total;
+  for (const d of defs) { r -= (d.weight||1); if (r <= 0) return d; }
+  return defs[0];
+}
+
+/* Génération (distance) */
 let distSinceSpawn = 0;
 let nextGapPx = 360;
 
 function scheduleNextGap(currentSpeed) {
-  // base aléatoire “neutre”
   const base  = currentSpeed * (T_AIR * GAP_COEF) + GAP_BASE;
   const extra = GAP_EXTRA_MIN + Math.random() * (GAP_EXTRA_MAX - GAP_EXTRA_MIN);
   const factor = gapFactorByProgress(currentSpeed, score);
-
-  // applique le facteur puis impose les minimas
   let gap = (base + extra) * factor;
-  const hardFloor   = 240;                    // inchangé
+
+  const hardFloor   = 240;
   const scaledFloor = MIN_PATTERN_GAP * factor;
   gap = Math.max(hardFloor, scaledFloor, gap);
 
-  // variété : parfois un “long gap” (bonus uniquement vers le haut)
   if (Math.random() < LONG_GAP_CHANCE) {
     const bonus = LONG_GAP_BONUS_MIN + Math.random() * (LONG_GAP_BONUS_MAX - LONG_GAP_BONUS_MIN);
     gap += bonus;
   }
-
   nextGapPx = gap;
 }
 
@@ -212,41 +256,62 @@ function addBlockAt(x, w, h) {
   obstacles.push(new Obstacle(x, y, w, h));
 }
 
-/* Patterns: SINGLE / LOW-WIDE (pas de doubles) */
 function spawnPattern(currentSpeed) {
   const dpr = window.devicePixelRatio || 1;
   const viewW = canvas.width / dpr;
   const spawnX = Math.floor(viewW + 12);
 
-  const roll = Math.random();
+  const defs = OBSTACLE_DEFS || FALLBACK_OBSTACLES;
+  const def = pickWeighted(defs);
 
-  if (roll < 0.75) {
-    // SINGLE
-    let w = 26 + Math.floor(Math.random() * 22);   // 26–48
-    let h = 30 + Math.floor(Math.random() * 50);   // 30–80
-    ({ w, h } = adjustBlockForSpeed(currentSpeed, w, h));
-    addBlockAt(spawnX, w, h);
-  } else {
-    // LOW-WIDE
-    let w = 70 + Math.floor(Math.random() * 80);   // 70–150
-    let h = 22 + Math.floor(Math.random() * 18);   // 22–40
-    ({ w, h } = adjustBlockForSpeed(currentSpeed, w, h));
-    addBlockAt(spawnX, w, h);
-  }
+  let w = Math.floor(def.wMin + Math.random() * (def.wMax - def.wMin + 1));
+  let h = Math.floor(def.hMin + Math.random() * (def.hMax - def.hMin + 1));
+  ({ w, h } = adjustBlockForSpeed(currentSpeed, w, h));
+  addBlockAt(spawnX, w, h);
 
   scheduleNextGap(currentSpeed);
 }
 
+/* Bonus (distance indépendante) */
+let distSinceBonus = 0;
+let nextBonusGapPx = 800;
+
+function scheduleNextBonus(currentSpeed) {
+  const base = 500 + Math.random() * 700;       // 500–1200
+  const k = Math.min(1.2, 0.9 + currentSpeed / 2000);
+  nextBonusGapPx = base * k;
+}
+
+function spawnBonus(currentSpeed) {
+  const dpr = window.devicePixelRatio || 1;
+  const viewW = canvas.width / dpr;
+  const spawnX = Math.floor(viewW + 12);
+
+  const defs = BONUS_DEFS || FALLBACK_BONUSES;
+  const def = pickWeighted(defs);
+
+  const r = 14;
+  const hAbove = 60 + Math.random() * 80;       // 60–140 au-dessus de la ligne
+  const y = Math.max(groundY - hAbove, r + 4);
+  bonuses.push(new Bonus(spawnX, y, r, def.points));
+
+  scheduleNextBonus(currentSpeed);
+}
+
 /* Collisions */
 function hit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+function circleHit(x1,y1,r1, x2,y2,r2) {
+  const dx = x1 - x2, dy = y1 - y2;
+  return dx*dx + dy*dy <= (r1 + r2) * (r1 + r2);
+}
 
 /* États */
 function gameOver() { state = 'over'; syncUI(); }
 function resetStateCommon() {
   score = 0; t = 0;
-  obstacles.length = 0;
-  distSinceSpawn = 0;
-  nextGapPx = 360;
+  obstacles.length = 0; bonuses.length = 0;
+  distSinceSpawn = 0; distSinceBonus = 0;
+  nextGapPx = 360; nextBonusGapPx = 800;
   player.snapToGround();
 }
 function resetGame() { resetStateCommon(); state = 'running'; syncUI(); }
@@ -268,27 +333,37 @@ function loop(now = performance.now()) {
     player.update(dt);
 
     distSinceSpawn += speed * dt;
-    if (distSinceSpawn >= nextGapPx) {
-      distSinceSpawn = 0;
-      spawnPattern(speed);
-    }
+    if (distSinceSpawn >= nextGapPx) { distSinceSpawn = 0; spawnPattern(speed); }
+
+    distSinceBonus += speed * dt;
+    if (distSinceBonus >= nextBonusGapPx) { distSinceBonus = 0; spawnBonus(speed); }
 
     const p = player.getAABB();
+
     for (let i = obstacles.length - 1; i >= 0; i--) {
       const o = obstacles[i];
-      o.update(dt, speed);
-      o.draw(ctx);
+      o.update(dt, speed); o.draw(ctx);
       if (o.off()) { obstacles.splice(i, 1); continue; }
       if (hit(p, o.aabb())) { gameOver(); break; }
     }
+
+    for (let i = bonuses.length - 1; i >= 0; i--) {
+      const b = bonuses[i];
+      b.update(dt, speed); b.draw(ctx);
+      if (b.off()) { bonuses.splice(i, 1); continue; }
+      if (circleHit(player.x, player.y, player.r, b.x, b.y, b.r)) {
+        score += b.points; bonuses.splice(i, 1);
+      }
+    }
   } else {
     for (const o of obstacles) o.draw(ctx);
+    for (const b of bonuses) b.draw(ctx);
     if (state === 'over') {
       const w = canvas.width / (window.devicePixelRatio || 1);
       ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(0, 0, w, groundY);
       ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
-      ctx.font = 'bold 32px system-ui, sans-serif'; ctx.fillText('Game Over', w / 2, groundY - 84);
-      ctx.font = '16px system-ui, sans-serif'; ctx.fillText('Espace pour rejouer', w / 2, groundY - 52);
+      ctx.font = 'bold 32px system-ui,sans-serif'; ctx.fillText('Game Over', w / 2, groundY - 84);
+      ctx.font = '16px system-ui,sans-serif'; ctx.fillText('Espace pour rejouer', w / 2, groundY - 52);
     }
   }
 

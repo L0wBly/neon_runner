@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "type": "coin", "points": 50,  "weight": 2 },
+    { "type": "gem",  "points": 120, "weight": 1 }
+  ]
+}
