@@ -17,13 +17,29 @@ let groundY = 0;
 let score = 0;
 let t = 0;
 
+/* Physique & joueur */
 const GRAVITY = 2200;
 const JUMP_VY = -950;
-const T_AIR = (2 * Math.abs(JUMP_VY)) / GRAVITY; // durée en l’air approx.
+const PLAYER_R = 22;
+const SAFETY = 18;
+const T_AIR = (2 * Math.abs(JUMP_VY)) / GRAVITY;
 
-/* déclaré tôt, jamais redéclaré */
+/* Réglages d’espacement “de base” entre patterns (minima conservés) */
+const GAP_COEF        = 0.85;  // proportion de distance de saut
+const GAP_BASE        = 140;   // marge fixe
+const GAP_EXTRA_MIN   = 100;   // aléa min
+const GAP_EXTRA_MAX   = 420;   // ↑ plus de max pour plus de variété (était 220)
+const MIN_PATTERN_GAP = 360;   // plancher dur (avant facteur)
+
+/* Long gaps optionnels (bonus uniquement vers le haut) */
+const LONG_GAP_CHANCE    = 0.22; // ~22% des spawns deviennent “longs”
+const LONG_GAP_BONUS_MIN = 160;  // bonus mini (px)
+const LONG_GAP_BONUS_MAX = 420;  // bonus maxi (px)
+
+/* déclaré tôt */
 let player = null;
 
+/* UI */
 function syncUI() {
   const isMenu = state === 'menu';
   const isOver = state === 'over';
@@ -35,7 +51,7 @@ function syncUI() {
   if ($pause) $pause.textContent = isPaused ? 'Reprendre' : 'Pause';
 }
 
-/* Canvas + sol 70% */
+/* Canvas + sol */
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const w = window.innerWidth, h = window.innerHeight;
@@ -61,7 +77,7 @@ function seedStars() {
     nearStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 2 + 0.8 });
 }
 
-/* Vitesse linéaire */
+/* Vitesse globale (linéaire) */
 function difficultySpeed(s) { return 220 + 14 * s; }
 
 /* Fond + sol */
@@ -88,7 +104,7 @@ function paintBackdrop(dt, speed) {
 
 /* Joueur */
 class Player {
-  constructor() { this.r = 22; this.x = 0; this.y = 0; this.vy = 0; this.onGround = true; this.snapToGround(); }
+  constructor() { this.r = PLAYER_R; this.x = 0; this.y = 0; this.vy = 0; this.onGround = true; this.snapToGround(); }
   snapToGround() {
     const w = canvas.width / (window.devicePixelRatio || 1);
     this.x = Math.floor(w / 5);
@@ -112,12 +128,9 @@ class Player {
 player = new Player();
 seedStars();
 
-/* Obstacles vitesse uniforme */
+/* Obstacles */
 class Obstacle {
-  constructor(x, y, w, h) {
-    this.x = x; this.y = y; this.w = w; this.h = h;
-    this.col = '#7dd3fc'; this.border = '#0ea5e9';
-  }
+  constructor(x, y, w, h) { this.x = x; this.y = y; this.w = w; this.h = h; this.col = '#7dd3fc'; this.border = '#0ea5e9'; }
   update(dt, baseSpeed) { this.x -= baseSpeed * dt; }
   draw(ctx) {
     ctx.fillStyle = this.col; ctx.strokeStyle = this.border; ctx.lineWidth = 2;
@@ -130,49 +143,102 @@ class Obstacle {
 }
 const obstacles = [];
 
-/* Génération infinie basée sur la distance */
+/* Jouabilité (sauts toujours possibles) */
+function timeAboveHeight(h) {
+  const vy = Math.abs(JUMP_VY);
+  const disc = vy * vy - 2 * GRAVITY * h;
+  if (disc <= 0) return 0;
+  return (2 * Math.sqrt(disc)) / GRAVITY;
+}
+function maxClearableWidth(speed, h) {
+  const dt = timeAboveHeight(h);
+  if (dt <= 0) return 0;
+  const horiz = speed * dt;
+  return Math.max(0, horiz - 2 * PLAYER_R - SAFETY);
+}
+function adjustBlockForSpeed(speed, w, h) {
+  let limit = maxClearableWidth(speed, h);
+  if (limit < 18) {
+    let hh = h;
+    while (hh > 12 && maxClearableWidth(speed, hh) < 22) hh -= 6;
+    h = Math.max(12, hh);
+    limit = maxClearableWidth(speed, h);
+  }
+  const newW = Math.min(w, Math.max(18, Math.floor(limit)));
+  return { w: newW, h };
+}
+
+/* ——— Paliers d’espacement (tes valeurs) ——— */
+function gapFactorByProgress(currentSpeed, currentScore) {
+  if (currentSpeed < 500 || currentScore < 1000) {
+    return 0.77;
+  }
+  if (currentScore < 3000) {
+    return 0.88;
+  }
+  const steps = Math.floor((currentScore - 2500) / 500) + 1;
+  let factor = 0.92 * Math.pow(0.97, steps);
+  if (factor < 0.65) factor = 0.65;
+  return factor;
+}
+
+/* Génération infinie basée sur distance */
 let distSinceSpawn = 0;
 let nextGapPx = 360;
 
 function scheduleNextGap(currentSpeed) {
-  const minGap = Math.max(200, 420 - 0.25 * currentSpeed);
-  const extra = 120 + Math.random() * 260;
-  nextGapPx = Math.max(minGap, minGap + extra);
+  // base aléatoire “neutre”
+  const base  = currentSpeed * (T_AIR * GAP_COEF) + GAP_BASE;
+  const extra = GAP_EXTRA_MIN + Math.random() * (GAP_EXTRA_MAX - GAP_EXTRA_MIN);
+  const factor = gapFactorByProgress(currentSpeed, score);
+
+  // applique le facteur puis impose les minimas
+  let gap = (base + extra) * factor;
+  const hardFloor   = 240;                    // inchangé
+  const scaledFloor = MIN_PATTERN_GAP * factor;
+  gap = Math.max(hardFloor, scaledFloor, gap);
+
+  // variété : parfois un “long gap” (bonus uniquement vers le haut)
+  if (Math.random() < LONG_GAP_CHANCE) {
+    const bonus = LONG_GAP_BONUS_MIN + Math.random() * (LONG_GAP_BONUS_MAX - LONG_GAP_BONUS_MIN);
+    gap += bonus;
+  }
+
+  nextGapPx = gap;
 }
+
 function addBlockAt(x, w, h) {
   const y = groundY - h;
   obstacles.push(new Obstacle(x, y, w, h));
 }
+
+/* Patterns: SINGLE / LOW-WIDE (pas de doubles) */
 function spawnPattern(currentSpeed) {
   const dpr = window.devicePixelRatio || 1;
   const viewW = canvas.width / dpr;
   const spawnX = Math.floor(viewW + 12);
 
   const roll = Math.random();
-  if (roll < 0.55) {
-    const w = 26 + Math.floor(Math.random() * 22);
-    const h = 30 + Math.floor(Math.random() * 50);
+
+  if (roll < 0.75) {
+    // SINGLE
+    let w = 26 + Math.floor(Math.random() * 22);   // 26–48
+    let h = 30 + Math.floor(Math.random() * 50);   // 30–80
+    ({ w, h } = adjustBlockForSpeed(currentSpeed, w, h));
     addBlockAt(spawnX, w, h);
-  } else if (roll < 0.90) {
-    const w1 = 24 + Math.floor(Math.random() * 20);
-    const h1 = 28 + Math.floor(Math.random() * 44);
-    const w2 = 24 + Math.floor(Math.random() * 22);
-    const h2 = 28 + Math.floor(Math.random() * 44);
-    const maxAirPixels = currentSpeed * (T_AIR * 0.82);
-    const gap = Math.max(52, Math.min(200, maxAirPixels));
-    addBlockAt(spawnX, w1, h1);
-    addBlockAt(spawnX + Math.floor(gap), w2, h2);
   } else {
-    const w = 70 + Math.floor(Math.random() * 80);
-    const h = 22 + Math.floor(Math.random() * 18);
+    // LOW-WIDE
+    let w = 70 + Math.floor(Math.random() * 80);   // 70–150
+    let h = 22 + Math.floor(Math.random() * 18);   // 22–40
+    ({ w, h } = adjustBlockForSpeed(currentSpeed, w, h));
     addBlockAt(spawnX, w, h);
   }
+
   scheduleNextGap(currentSpeed);
 }
 
-function hit(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-}
+/* Collisions */
+function hit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
 
 /* États */
 function gameOver() { state = 'over'; syncUI(); }
@@ -186,7 +252,7 @@ function resetStateCommon() {
 function resetGame() { resetStateCommon(); state = 'running'; syncUI(); }
 function startFromMenu() { resetStateCommon(); state = 'running'; syncUI(); }
 
-/* Boucle principale */
+/* Boucle */
 let last = performance.now();
 function loop(now = performance.now()) {
   const dt = Math.min(0.033, (now - last) / 1000);
@@ -194,7 +260,7 @@ function loop(now = performance.now()) {
 
   const speed = difficultySpeed(t);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  paintBackdrop(dt, state === 'running' ? speed : 0); // fond figé en pause
+  paintBackdrop(dt, state === 'running' ? speed : 0);
 
   if (state === 'running') {
     t += dt;
