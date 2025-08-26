@@ -1,7 +1,5 @@
 'use strict';
 
-/* Neon Night Runner — boucle, états, UI, physique, obstacles */
-
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const $score = document.getElementById('score');
@@ -11,7 +9,7 @@ const $restart = document.getElementById('restart');
 const $overlay = document.getElementById('overlay');
 const $start = document.getElementById('start');
 
-let state = 'menu';     // 'menu' | 'running' | 'paused' | 'over'
+let state = 'menu';
 let groundY = 0;
 let score = 0;
 let t = 0;
@@ -21,7 +19,7 @@ const JUMP_VY = -950;
 
 let player = null;
 
-/* UI centralisée */
+/* UI */
 function syncUI() {
   const isMenu = state === 'menu';
   const isOver = state === 'over';
@@ -31,7 +29,7 @@ function syncUI() {
   $pause.textContent = state === 'paused' ? 'Reprendre' : 'Pause';
 }
 
-/* Canvas responsive (+DPR) et sol au milieu */
+/* Canvas + sol 70% */
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const w = window.innerWidth, h = window.innerHeight;
@@ -46,17 +44,20 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-/* Parallax d'étoiles */
+/* Parallax */
 const farStars = [], nearStars = [];
 function seedStars() {
   farStars.length = 0; nearStars.length = 0;
   const w = canvas.width / (window.devicePixelRatio || 1);
-  for (let i = 0; i < 100; i++) farStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 1.5 + 0.2 });
-  for (let i = 0; i < 40; i++)  nearStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 2 + 0.8 });
+  for (let i = 0; i < 100; i++)
+    farStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 1.5 + 0.2 });
+  for (let i = 0; i < 40; i++)
+    nearStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 2 + 0.8 });
 }
 seedStars();
 
-function difficultySpeed(s) { return 280 * (1 + 0.12 * Math.log2(1 + s)); }
+/* Vitesse linéaire (commence lent, accélère) */
+function difficultySpeed(s) { return 220 + 14 * s; }
 
 function paintBackdrop(dt, speed) {
   const w = canvas.width / (window.devicePixelRatio || 1);
@@ -79,7 +80,7 @@ function paintBackdrop(dt, speed) {
   ctx.shadowBlur = 0;
 }
 
-/* Joueur (cercle centré) */
+/* Joueur (x = w/5) */
 class Player {
   constructor() { this.r = 22; this.x = 0; this.y = 0; this.vy = 0; this.onGround = true; this.snapToGround(); }
   snapToGround() {
@@ -104,31 +105,45 @@ class Player {
 }
 player = new Player();
 
-/* Obstacles */
+/* Obstacles: même vitesse pour tous (pas de multiplicateur) */
 class Obstacle {
-  constructor(x, y, w, h, speedMul = 1) { this.x = x; this.y = y; this.w = w; this.h = h; this.speedMul = speedMul; this.col = '#7dd3fc'; this.border = '#0ea5e9'; }
-  update(dt, speed) { this.x -= speed * this.speedMul * dt; }
-  draw(ctx) { ctx.fillStyle = this.col; ctx.strokeStyle = this.border; ctx.lineWidth = 2; ctx.shadowColor = this.col; ctx.shadowBlur = 12; ctx.fillRect(this.x, this.y, this.w, this.h); ctx.shadowBlur = 0; ctx.strokeRect(this.x, this.y, this.w, this.h); }
-  isOffscreen() { return this.x + this.w < -10; }
-  getAABB() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
+  constructor(x, y, w, h) {
+    this.x = x; this.y = y; this.w = w; this.h = h;
+    this.col = '#7dd3fc'; this.border = '#0ea5e9';
+  }
+  update(dt, baseSpeed) { this.x -= baseSpeed * dt; }
+  draw(ctx) {
+    ctx.fillStyle = this.col; ctx.strokeStyle = this.border; ctx.lineWidth = 2;
+    ctx.shadowColor = this.col; ctx.shadowBlur = 12;
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+    ctx.shadowBlur = 0; ctx.strokeRect(this.x, this.y, this.w, this.h);
+  }
+  off() { return this.x + this.w < -10; }
+  aabb() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
 }
 const obstacles = [];
 let spawnTimer = 0;
 
+/* Spawn à droite (hors-écran), ancré au sol */
 function spawnObstacle() {
-  const w = canvas.width / (window.devicePixelRatio || 1);
-  const h = 30 + Math.floor(Math.random() * 35);
-  const ow = 26 + Math.floor(Math.random() * 22);
-  const x = w + 20, y = groundY - h, mul = 1 + Math.random() * 0.25;
-  obstacles.push(new Obstacle(x, y, ow, h, mul));
+  const dpr = window.devicePixelRatio || 1;
+  const viewW = canvas.width / dpr;
+
+  const w = 26 + Math.floor(Math.random() * 22);  // 26–48
+  const h = 30 + Math.floor(Math.random() * 35);  // 30–65
+  const x = Math.floor(viewW + 12);               // à droite
+  const y = groundY - h;
+
+  obstacles.push(new Obstacle(x, y, w, h));
 }
-function aabbHit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+function hit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
 
 /* États */
 function gameOver() { state = 'over'; syncUI(); }
-function resetStateCommon(initialDelay = 1.2) { score = 0; t = 0; obstacles.length = 0; spawnTimer = initialDelay; player.snapToGround(); }
-function resetGame() { resetStateCommon(1.2); state = 'running'; syncUI(); }
-function startFromMenu() { resetStateCommon(1.2); state = 'running'; syncUI(); }
+function resetStateCommon(initialDelay = 1.0) { score = 0; t = 0; obstacles.length = 0; spawnTimer = initialDelay; player.snapToGround(); }
+function resetGame() { resetStateCommon(1.0); state = 'running'; syncUI(); }
+function startFromMenu() { resetStateCommon(1.0); state = 'running'; syncUI(); }
 
 /* Boucle */
 let last = performance.now();
@@ -141,22 +156,26 @@ function loop(now = performance.now()) {
   paintBackdrop(dt, speed);
 
   if (state === 'running') {
-    t += dt; score += dt * (10 + speed * 0.03);
+    t += dt;
+    score += dt * (10 + speed * 0.03);
     player.update(dt);
 
+    // cadence: lente au début, accélère avec la vitesse
     spawnTimer -= dt;
     if (spawnTimer <= 0) {
       spawnObstacle();
-      const base = 1.2, variability = 0.6, factor = Math.max(0.55, 320 / Math.max(1, speed));
+      const base = 1.2, variability = 0.6;
+      const factor = Math.max(0.55, 350 / Math.max(1, speed));
       spawnTimer = (base + (Math.random() - 0.5) * variability) * factor;
     }
 
-    const pBox = player.getAABB();
+    const p = player.getAABB();
     for (let i = obstacles.length - 1; i >= 0; i--) {
       const o = obstacles[i];
-      o.update(dt, speed); o.draw(ctx);
-      if (o.isOffscreen()) { obstacles.splice(i, 1); continue; }
-      if (aabbHit(pBox, o.getAABB())) { gameOver(); break; }
+      o.update(dt, speed);   // même vitesse pour tous
+      o.draw(ctx);
+      if (o.off()) { obstacles.splice(i, 1); continue; }
+      if (hit(p, o.aabb())) { gameOver(); break; }
     }
   } else {
     for (const o of obstacles) o.draw(ctx);
@@ -177,7 +196,7 @@ function loop(now = performance.now()) {
 }
 requestAnimationFrame(loop);
 
-/* Entrées & UI */
+/* Entrées */
 $start.addEventListener('click', startFromMenu);
 $pause.addEventListener('click', () => { state = state === 'running' ? 'paused' : (state === 'paused' ? 'running' : state); syncUI(); });
 $restart.addEventListener('click', resetGame);
