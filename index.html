@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neon Night Runner</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <canvas id="game" aria-label="Jeu Neon Night Runner"></canvas>
+
+  <div id="ui" aria-live="polite">
+    <div class="pill"><span>Score</span><strong id="score">0</strong></div>
+    <div class="pill"><span>Vitesse</span><strong id="speed">0</strong></div>
+    <button id="pause" class="btn">Pause</button>
+    <button id="restart" class="btn" hidden>Rejouer</button>
+  </div>
+
+  <div id="overlay">
+    <div class="panel">
+      <h1>Neon Night Runner</h1>
+      <p>Espace/↑ pour sauter — P pour pause</p>
+      <p>Tape l’écran pour sauter (mobile)</p>
+      <button id="start" class="btn big">Jouer</button>
+    </div>
+  </div>
+
+  <script defer src="main.js"></script>
+</body>
+</html>
