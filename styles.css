@@ -1,56 +1,54 @@
 /* Thème */
 :root{
-  --bg1:#070b1a;
-  --bg2:#0c122b;
-  --neon:#67e8f9;
-  --neon2:#f472b6;
-  --text:#f8fafc;
+  --bg1:#070b1a; --bg2:#0c122b; --neon:#67e8f9; --neon2:#f472b6; --text:#f8fafc;
+  --glass:rgba(255,255,255,.06); --glassBorder:rgba(255,255,255,.15);
 }
 
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
-  margin:0;
-  font-family:ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, sans-serif;
+  margin:0; font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,sans-serif;
   background: radial-gradient(1200px 600px at 50% 20%, var(--bg2), var(--bg1));
-  color:var(--text);
-  overflow:hidden;
+  color:var(--text); overflow:hidden;
 }
 
 /* Canvas + UI */
 #game{ display:block; width:100vw; height:100vh; background: transparent; }
 
 #ui{
-  position:fixed; top:12px; left:12px;
-  display:flex; gap:12px; align-items:center; z-index:10;
+  position:fixed; top:12px; left:12px; display:flex; gap:12px; align-items:center; z-index:10;
 }
+
+/* Badges */
 .pill{
-  display:flex; align-items:center; gap:8px;
-  padding:6px 10px; border-radius:999px;
-  background: rgba(255,255,255,.06);
-  border:1px solid rgba(255,255,255,.15);
-  backdrop-filter: blur(6px);
-  box-shadow:0 0 12px rgba(103,232,249,.25);
+  display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px;
+  background: var(--glass); border:1px solid var(--glassBorder); backdrop-filter: blur(6px);
+  box-shadow:0 0 10px rgba(103,232,249,.18);
 }
 .pill span{opacity:.85; font-size:12px}
 .pill strong{font-variant-numeric:tabular-nums}
 
+/* Boutons */
 .btn{
   padding:6px 12px; border-radius:10px; border:1px solid rgba(255,255,255,.2);
   background: linear-gradient(90deg, rgba(103,232,249,.25), rgba(244,114,182,.25));
-  color:var(--text); cursor:pointer;
-  backdrop-filter: blur(6px);
+  color:var(--text); cursor:pointer; backdrop-filter: blur(6px);
+  transition:transform .12s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease;
 }
 .btn.big{padding:12px 18px; font-size:18px}
+.btn:hover{ transform:translateY(-1px); box-shadow:0 8px 24px rgba(103,232,249,.18); }
+.btn:active{ transform:translateY(0); }
+.btn:disabled{ opacity:.55; cursor:not-allowed; }
+.btn:focus-visible{ outline:2px solid var(--neon); outline-offset:2px; }
+.btn.primary{ background: linear-gradient(90deg, rgba(103,232,249,.35), rgba(244,114,182,.35)); }
+.btn.ghost{ background: transparent; border-color: rgba(255,255,255,.25); }
 
-/* Overlay de démarrage */
-#overlay{
+/* Overlays (start + pause) */
+#overlay, #pauseOverlay{
   position:fixed; inset:0; display:grid; place-items:center;
-  background: linear-gradient(180deg, rgba(0,0,0,.25), rgba(0,0,0,.6));
-  z-index:20;
+  background: linear-gradient(180deg, rgba(0,0,0,.25), rgba(0,0,0,.6)); z-index:20;
 }
-/* Respecte l’attribut [hidden] malgré la règle au-dessus */
-#overlay[hidden]{ display:none !important; }
+#overlay[hidden], #pauseOverlay[hidden]{ display:none !important; }
 
 .panel{
   text-align:center; padding:24px; border-radius:16px;

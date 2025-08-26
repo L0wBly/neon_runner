@@ -2,12 +2,15 @@
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
+
 const $score = document.getElementById('score');
 const $speed = document.getElementById('speed');
 const $pause = document.getElementById('pause');
 const $restart = document.getElementById('restart');
 const $overlay = document.getElementById('overlay');
 const $start = document.getElementById('start');
+const $pauseOverlay = document.getElementById('pauseOverlay');
+const $resume = document.getElementById('resume');
 
 let state = 'menu';
 let groundY = 0;
@@ -16,17 +19,20 @@ let t = 0;
 
 const GRAVITY = 2200;
 const JUMP_VY = -950;
+const T_AIR = (2 * Math.abs(JUMP_VY)) / GRAVITY; // durée en l’air approx.
 
+/* déclaré tôt, jamais redéclaré */
 let player = null;
 
-/* UI */
 function syncUI() {
   const isMenu = state === 'menu';
   const isOver = state === 'over';
+  const isPaused = state === 'paused';
   $overlay.hidden = !isMenu;
   $overlay.style.display = isMenu ? 'grid' : 'none';
   $restart.hidden = !isOver;
-  $pause.textContent = state === 'paused' ? 'Reprendre' : 'Pause';
+  if ($pauseOverlay) $pauseOverlay.hidden = !isPaused;
+  if ($pause) $pause.textContent = isPaused ? 'Reprendre' : 'Pause';
 }
 
 /* Canvas + sol 70% */
@@ -54,11 +60,11 @@ function seedStars() {
   for (let i = 0; i < 40; i++)
     nearStars.push({ x: Math.random() * w, y: Math.random() * groundY, r: Math.random() * 2 + 0.8 });
 }
-seedStars();
 
-/* Vitesse linéaire (commence lent, accélère) */
+/* Vitesse linéaire */
 function difficultySpeed(s) { return 220 + 14 * s; }
 
+/* Fond + sol */
 function paintBackdrop(dt, speed) {
   const w = canvas.width / (window.devicePixelRatio || 1);
   const h = canvas.height / (window.devicePixelRatio || 1);
@@ -80,7 +86,7 @@ function paintBackdrop(dt, speed) {
   ctx.shadowBlur = 0;
 }
 
-/* Joueur (x = w/5) */
+/* Joueur */
 class Player {
   constructor() { this.r = 22; this.x = 0; this.y = 0; this.vy = 0; this.onGround = true; this.snapToGround(); }
   snapToGround() {
@@ -104,8 +110,9 @@ class Player {
   getAABB() { return { x: this.x - this.r, y: this.y - this.r, w: this.r * 2, h: this.r * 2 }; }
 }
 player = new Player();
+seedStars();
 
-/* Obstacles: même vitesse pour tous (pas de multiplicateur) */
+/* Obstacles vitesse uniforme */
 class Obstacle {
   constructor(x, y, w, h) {
     this.x = x; this.y = y; this.w = w; this.h = h;
@@ -122,57 +129,88 @@ class Obstacle {
   aabb() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
 }
 const obstacles = [];
-let spawnTimer = 0;
 
-/* Spawn à droite (hors-écran), ancré au sol */
-function spawnObstacle() {
-  const dpr = window.devicePixelRatio || 1;
-  const viewW = canvas.width / dpr;
+/* Génération infinie basée sur la distance */
+let distSinceSpawn = 0;
+let nextGapPx = 360;
 
-  const w = 26 + Math.floor(Math.random() * 22);  // 26–48
-  const h = 30 + Math.floor(Math.random() * 35);  // 30–65
-  const x = Math.floor(viewW + 12);               // à droite
+function scheduleNextGap(currentSpeed) {
+  const minGap = Math.max(200, 420 - 0.25 * currentSpeed);
+  const extra = 120 + Math.random() * 260;
+  nextGapPx = Math.max(minGap, minGap + extra);
+}
+function addBlockAt(x, w, h) {
   const y = groundY - h;
-
   obstacles.push(new Obstacle(x, y, w, h));
 }
+function spawnPattern(currentSpeed) {
+  const dpr = window.devicePixelRatio || 1;
+  const viewW = canvas.width / dpr;
+  const spawnX = Math.floor(viewW + 12);
 
-function hit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+  const roll = Math.random();
+  if (roll < 0.55) {
+    const w = 26 + Math.floor(Math.random() * 22);
+    const h = 30 + Math.floor(Math.random() * 50);
+    addBlockAt(spawnX, w, h);
+  } else if (roll < 0.90) {
+    const w1 = 24 + Math.floor(Math.random() * 20);
+    const h1 = 28 + Math.floor(Math.random() * 44);
+    const w2 = 24 + Math.floor(Math.random() * 22);
+    const h2 = 28 + Math.floor(Math.random() * 44);
+    const maxAirPixels = currentSpeed * (T_AIR * 0.82);
+    const gap = Math.max(52, Math.min(200, maxAirPixels));
+    addBlockAt(spawnX, w1, h1);
+    addBlockAt(spawnX + Math.floor(gap), w2, h2);
+  } else {
+    const w = 70 + Math.floor(Math.random() * 80);
+    const h = 22 + Math.floor(Math.random() * 18);
+    addBlockAt(spawnX, w, h);
+  }
+  scheduleNextGap(currentSpeed);
+}
+
+function hit(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
 
 /* États */
 function gameOver() { state = 'over'; syncUI(); }
-function resetStateCommon(initialDelay = 1.0) { score = 0; t = 0; obstacles.length = 0; spawnTimer = initialDelay; player.snapToGround(); }
-function resetGame() { resetStateCommon(1.0); state = 'running'; syncUI(); }
-function startFromMenu() { resetStateCommon(1.0); state = 'running'; syncUI(); }
+function resetStateCommon() {
+  score = 0; t = 0;
+  obstacles.length = 0;
+  distSinceSpawn = 0;
+  nextGapPx = 360;
+  player.snapToGround();
+}
+function resetGame() { resetStateCommon(); state = 'running'; syncUI(); }
+function startFromMenu() { resetStateCommon(); state = 'running'; syncUI(); }
 
-/* Boucle */
+/* Boucle principale */
 let last = performance.now();
 function loop(now = performance.now()) {
   const dt = Math.min(0.033, (now - last) / 1000);
   last = now;
 
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
   const speed = difficultySpeed(t);
-  paintBackdrop(dt, speed);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  paintBackdrop(dt, state === 'running' ? speed : 0); // fond figé en pause
 
   if (state === 'running') {
     t += dt;
     score += dt * (10 + speed * 0.03);
     player.update(dt);
 
-    // cadence: lente au début, accélère avec la vitesse
-    spawnTimer -= dt;
-    if (spawnTimer <= 0) {
-      spawnObstacle();
-      const base = 1.2, variability = 0.6;
-      const factor = Math.max(0.55, 350 / Math.max(1, speed));
-      spawnTimer = (base + (Math.random() - 0.5) * variability) * factor;
+    distSinceSpawn += speed * dt;
+    if (distSinceSpawn >= nextGapPx) {
+      distSinceSpawn = 0;
+      spawnPattern(speed);
     }
 
     const p = player.getAABB();
     for (let i = obstacles.length - 1; i >= 0; i--) {
       const o = obstacles[i];
-      o.update(dt, speed);   // même vitesse pour tous
+      o.update(dt, speed);
       o.draw(ctx);
       if (o.off()) { obstacles.splice(i, 1); continue; }
       if (hit(p, o.aabb())) { gameOver(); break; }
@@ -197,13 +235,20 @@ function loop(now = performance.now()) {
 requestAnimationFrame(loop);
 
 /* Entrées */
-$start.addEventListener('click', startFromMenu);
-$pause.addEventListener('click', () => { state = state === 'running' ? 'paused' : (state === 'paused' ? 'running' : state); syncUI(); });
-$restart.addEventListener('click', resetGame);
+if ($start) $start.addEventListener('click', startFromMenu);
+if ($pause) $pause.addEventListener('click', () => {
+  state = state === 'running' ? 'paused' : (state === 'paused' ? 'running' : state);
+  syncUI();
+});
+if ($restart) $restart.addEventListener('click', resetGame);
+if ($resume) $resume.addEventListener('click', () => { state = 'running'; syncUI(); });
 
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
-  if (e.code === 'KeyP') { state = state === 'running' ? 'paused' : (state === 'paused' ? 'running' : state); syncUI(); }
+  if (e.code === 'KeyP') {
+    state = state === 'running' ? 'paused' : (state === 'paused' ? 'running' : state);
+    syncUI();
+  }
   if (e.code === 'Space' || e.code === 'ArrowUp') {
     e.preventDefault();
     if (state === 'menu') startFromMenu();
