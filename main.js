@@ -20,6 +20,9 @@ let t = 0; // temps écoulé (secondes)
 const GRAVITY = 2200;  // px/s^2
 const JUMP_VY = -950;  // impulsion du saut
 
+// ✅ déclarer le joueur AVANT resizeCanvas pour éviter la TDZ
+let player = null;
+
 // --- Resize + DPR
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
@@ -33,7 +36,9 @@ function resizeCanvas() {
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   groundY = Math.floor(h * 0.8);
-  if (player) player.snapToGround(); // recale le perso si on redimensionne
+
+  // si le joueur existe déjà, on le recale sur le sol
+  if (player) player.snapToGround();
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
@@ -140,7 +145,9 @@ class Player {
     ctx.beginPath(); ctx.arc(this.x, this.y, this.r - 6, 0, Math.PI * 2); ctx.stroke();
   }
 }
-let player = new Player();
+
+// ✅ instancie le joueur APRÈS la classe (sans re-déclarer)
+player = new Player();
 
 // --- Boucle de jeu (delta time clampé)
 let last = performance.now();
@@ -177,7 +184,7 @@ $pause.addEventListener('click', () => {
 });
 
 $restart.addEventListener('click', () => {
-  // branché au commit "restart flow"
+  // sera branché au commit "restart flow"
 });
 
 // --- Contrôles
