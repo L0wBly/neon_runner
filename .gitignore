@@ -1,0 +1,6 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (si tu utilises ESLint/Prettier via npm)
+node_modules/
